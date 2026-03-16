@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #06080f;
+    color: #e2e8f0;
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0c1018;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1a2540;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #243050;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-card border border-border rounded-xl;
+  }
+
+  .btn-primary {
+    @apply bg-accent-blue hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-bg-hover text-slate-400 hover:text-white px-3 py-2 rounded-lg text-sm transition-colors;
+  }
+
+  .tab-btn {
+    @apply flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap;
+  }
+
+  .tab-btn.active {
+    @apply border-accent-blue text-accent-blue;
+  }
+
+  .tab-btn:not(.active) {
+    @apply border-transparent text-slate-400 hover:text-slate-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold;
+  }
+
+  .mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .glow-green {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.3);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.3);
+  }
+
+  .animate-new-row {
+    animation: newRow 1s ease-out;
+  }
+
+  @keyframes newRow {
+    0% { background-color: rgba(59, 130, 246, 0.15); }
+    100% { background-color: transparent; }
+  }
+
+  .insider-extreme {
+    @apply text-accent-red;
+    background: rgba(239, 68, 68, 0.12);
+  }
+
+  .insider-high {
+    @apply text-accent-yellow;
+    background: rgba(245, 158, 11, 0.12);
+  }
+
+  .insider-medium {
+    @apply text-accent-blue;
+    background: rgba(59, 130, 246, 0.12);
+  }
+
+  .insider-low {
+    @apply text-slate-400;
+    background: rgba(100, 116, 139, 0.12);
+  }
+}
