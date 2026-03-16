@@ -143,8 +143,9 @@ function TradeRow({ trade, isWatched, onAddWatch, onRemoveWatch, copiedAddr, onC
   const score = trade._insiderScore || 0
   const level = getInsiderLevel(score)
   const isBuy = trade.side === 'BUY'
-  const question = truncateQuestion(market?.question, 55)
-  const slug = market?.slug || market?.conditionId || trade.market
+  // API already returns title + slug inline — use as instant fallback before gamma lookup
+  const question = truncateQuestion(market?.question || trade.title, 55)
+  const slug = market?.slug || trade.slug || trade.eventSlug || trade.market
 
   return (
     <tr className={`border-b border-border/50 transition-colors hover:bg-bg-hover ${isNew ? 'animate-new-row' : ''}`}>
@@ -197,6 +198,9 @@ function TradeRow({ trade, isWatched, onAddWatch, onRemoveWatch, copiedAddr, onC
 
       {/* Wallet */}
       <td className="px-4 py-3">
+        {trade.pseudonym && (
+          <div className="text-xs text-blue-400 font-medium mb-0.5">{trade.pseudonym}</div>
+        )}
         <div className="flex items-center gap-1.5">
           <span
             className="mono text-xs text-slate-300 cursor-pointer hover:text-white"
@@ -215,9 +219,9 @@ function TradeRow({ trade, isWatched, onAddWatch, onRemoveWatch, copiedAddr, onC
             </button>
           )}
         </div>
-        {trade.transaction_hash && (
+        {(trade.transaction_hash || trade.transactionHash) && (
           <a
-            href={`https://polygonscan.com/tx/${trade.transaction_hash}`}
+            href={`https://polygonscan.com/tx/${trade.transaction_hash || trade.transactionHash}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-xs text-slate-600 hover:text-blue-400 transition-colors"

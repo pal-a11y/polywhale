@@ -4,16 +4,50 @@ const GAMMA_API = 'https://gamma-api.polymarket.com'
 const marketCache = new Map()
 const walletCache = new Map()
 
-export async function fetchRecentTrades(limit = 150) {
+/**
+ * Normalize raw Polymarket API trade to internal format.
+ *
+ * The API returns:
+ *   proxyWallet  → owner
+ *   conditionId  → market
+ *   timestamp    → match_time (unix epoch → ISO string)
+ *   transactionHash → transaction_hash
+ *   size (shares) × price (USDC/share) → size (USDC dollar value)
+ *
+ * The title, slug, outcome, side, price, pseudonym fields are already correct.
+ */
+function normalizeTrade(t) {
+  const usdcValue = parseFloat(t.size || 0) * parseFloat(t.price || 0)
+  return {
+    ...t,
+    // Stable unique ID from tx hash + token + timestamp
+    id: `${t.transactionHash || ''}_${t.asset || ''}_${t.timestamp || Date.now()}`,
+    // Normalised field names
+    owner: t.proxyWallet,
+    market: t.conditionId,
+    match_time: new Date((t.timestamp || 0) * 1000).toISOString(),
+    transaction_hash: t.transactionHash,
+    // Convert share count → USDC dollar value so all threshold comparisons
+    // and formatAmount() calls work correctly without touching other files.
+    size: usdcValue,
+    _shareCount: parseFloat(t.size || 0),
+  }
+}
+
+export async function fetchRecentTrades(limit = 200) {
   const res = await fetch(`${DATA_API}/trades?limit=${limit}`)
   if (!res.ok) throw new Error(`Trades API ${res.status}`)
-  return res.json()
+  const data = await res.json()
+  const arr = Array.isArray(data) ? data : (data.data || data.trades || [])
+  return arr.map(normalizeTrade)
 }
 
 export async function fetchWalletTrades(address, limit = 300) {
   const res = await fetch(`${DATA_API}/trades?user=${address}&limit=${limit}`)
   if (!res.ok) throw new Error(`Wallet API ${res.status}`)
-  return res.json()
+  const data = await res.json()
+  const arr = Array.isArray(data) ? data : (data.data || data.trades || [])
+  return arr.map(normalizeTrade)
 }
 
 export async function fetchMarkets(params = {}) {
@@ -43,6 +77,7 @@ export async function fetchWalletStats(address) {
     const trades = await fetchWalletTrades(address, 300)
     if (!trades?.length) return null
 
+    // size is already in USDC after normalization
     const totalVolume = trades.reduce((s, t) => s + parseFloat(t.size || 0), 0)
     const markets = new Map()
 
