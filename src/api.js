@@ -117,6 +117,43 @@ export async function fetchWalletStats(address) {
   }
 }
 
+/**
+ * Paginate backwards through the trades API until we have all trades
+ * newer than `sinceTimestamp` (ms) or we hit `maxPages`.
+ * Each page = 500 trades, newest-first.
+ */
+export async function fetchTradesSince(sinceTimestamp, maxPages = 10) {
+  const PAGE = 500
+  const all = []
+
+  for (let page = 0; page < maxPages; page++) {
+    const offset = page * PAGE
+    let res
+    try {
+      res = await fetch(`${DATA_API}/trades?limit=${PAGE}&offset=${offset}`)
+      if (!res.ok) break
+    } catch {
+      break
+    }
+    const data = await res.json()
+    const arr = Array.isArray(data) ? data : (data.data || data.trades || [])
+    if (!arr.length) break
+
+    const normalized = arr.map(normalizeTrade)
+
+    for (const t of normalized) {
+      if (new Date(t.match_time).getTime() >= sinceTimestamp) all.push(t)
+    }
+
+    // Stop once the oldest trade in this page is before our window
+    const oldest = normalized[normalized.length - 1]
+    if (new Date(oldest.match_time).getTime() < sinceTimestamp) break
+    if (arr.length < PAGE) break
+  }
+
+  return all
+}
+
 export function clearMarketCache() {
   marketCache.clear()
 }

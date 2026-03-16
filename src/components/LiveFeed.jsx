@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   formatAmount, formatAddress, formatTimeAgo, formatOddsPct,
   truncateQuestion, getInsiderLevel,
@@ -6,23 +6,66 @@ import {
 
 const POLYMARKET_BASE = 'https://polymarket.com/event/'
 
-export default function LiveFeed({ trades, loading, countdown, watchlist, onAddWatch, onRemoveWatch, isWatched, threshold }) {
-  const [filter, setFilter] = useState('all') // all | extreme | high | watchlist
-  const [sortKey, setSortKey] = useState('time') // time | size | score
+const PERIODS = [
+  { key: '5m',  label: '5 Min',    ms: 5  * 60 * 1000 },
+  { key: '15m', label: '15 Min',   ms: 15 * 60 * 1000 },
+  { key: '1h',  label: '1 Hour',   ms: 60 * 60 * 1000 },
+  { key: '6h',  label: '6 Hours',  ms: 6  * 60 * 60 * 1000 },
+  { key: '24h', label: '24 Hours', ms: 24 * 60 * 60 * 1000 },
+  { key: '7d',  label: '7 Days',   ms: 7  * 24 * 60 * 60 * 1000 },
+]
+
+export default function LiveFeed({
+  trades, loading, histLoading, countdown,
+  watchlist, onAddWatch, onRemoveWatch, isWatched,
+  threshold, onRequestHistory,
+}) {
+  const [period, setPeriod]   = useState('1h')
+  const [filter, setFilter]   = useState('all')   // all | extreme | high | watchlist
+  const [sortKey, setSortKey] = useState('time')  // time | size | score
   const [copiedAddr, setCopiedAddr] = useState(null)
 
+  // When period changes, request historical data from parent if needed
+  useEffect(() => {
+    const p = PERIODS.find(x => x.key === period)
+    if (!p) return
+    const sinceMs = Date.now() - p.ms
+    // Only fetch for periods > 1h (shorter ones are always covered by live polling)
+    if (p.ms > 60 * 60 * 1000) {
+      onRequestHistory?.(period, sinceMs)
+    }
+  }, [period]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Filter trades by selected time period
+  const periodTrades = useMemo(() => {
+    const p = PERIODS.find(x => x.key === period)
+    if (!p) return trades
+    const cutoff = Date.now() - p.ms
+    return trades.filter(t => new Date(t.match_time).getTime() >= cutoff)
+  }, [trades, period])
+
+  // Apply type filter + sort
   const filtered = useMemo(() => {
-    let result = trades
+    let result = periodTrades
     if (filter === 'extreme') result = result.filter(t => t._insiderScore >= 75)
     else if (filter === 'high') result = result.filter(t => t._insiderScore >= 55)
     else if (filter === 'watchlist') result = result.filter(t =>
       watchlist.some(w => w.address.toLowerCase() === t.owner?.toLowerCase()))
 
-    if (sortKey === 'size') result = [...result].sort((a, b) => parseFloat(b.size) - parseFloat(a.size))
+    if (sortKey === 'size')  result = [...result].sort((a, b) => parseFloat(b.size) - parseFloat(a.size))
     else if (sortKey === 'score') result = [...result].sort((a, b) => b._insiderScore - a._insiderScore)
-
     return result
-  }, [trades, filter, sortKey, watchlist])
+  }, [periodTrades, filter, sortKey, watchlist])
+
+  // Period-level stats
+  const periodStats = useMemo(() => {
+    const vol    = periodTrades.reduce((s, t) => s + parseFloat(t.size || 0), 0)
+    const wallets = new Set(periodTrades.map(t => t.owner).filter(Boolean))
+    const avgScore = periodTrades.length
+      ? Math.round(periodTrades.reduce((s, t) => s + (t._insiderScore || 0), 0) / periodTrades.length)
+      : 0
+    return { vol, wallets: wallets.size, count: periodTrades.length, avgScore }
+  }, [periodTrades])
 
   const copyAddr = (addr) => {
     navigator.clipboard.writeText(addr).then(() => {
@@ -43,21 +86,59 @@ export default function LiveFeed({ trades, loading, countdown, watchlist, onAddW
 
   return (
     <div>
-      {/* Section header */}
+      {/* ── Time-period selector ── */}
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider mr-1">Period</span>
+        {PERIODS.map(p => (
+          <button
+            key={p.key}
+            onClick={() => setPeriod(p.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              period === p.key
+                ? 'bg-accent-blue text-white shadow'
+                : 'bg-bg-card border border-border text-slate-400 hover:text-white hover:border-accent-blue/40'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+        {histLoading && (
+          <span className="flex items-center gap-1.5 text-xs text-blue-400 ml-1">
+            <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            Loading history…
+          </span>
+        )}
+      </div>
+
+      {/* ── Period stats bar ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+        {[
+          { label: 'Whale Trades',  value: periodStats.count.toLocaleString(),  color: 'text-white' },
+          { label: 'Volume',        value: formatAmount(periodStats.vol),         color: 'text-emerald-400' },
+          { label: 'Unique Wallets',value: periodStats.wallets.toLocaleString(), color: 'text-blue-400' },
+          { label: 'Avg Insider',   value: `${periodStats.avgScore}/100`,         color: periodStats.avgScore >= 55 ? 'text-yellow-400' : 'text-slate-400' },
+        ].map(s => (
+          <div key={s.label} className="card px-4 py-3">
+            <div className={`text-lg font-bold mono ${s.color}`}>{s.value}</div>
+            <div className="text-xs text-slate-500 mt-0.5">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Section header + filters ── */}
       <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
           <h2 className="text-lg font-semibold text-white">Live Whale Trades</h2>
           <p className="text-sm text-slate-500">
-            Non-sports trades ≥ {formatAmount(threshold)} · {filtered.length} trades shown
+            Non-sports ≥ {formatAmount(threshold)} · {filtered.length} shown
           </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Filter pills */}
           {[
-            { key: 'all', label: 'All' },
-            { key: 'extreme', label: '🔴 Extreme' },
-            { key: 'high', label: '🟡 High' },
+            { key: 'all',       label: 'All' },
+            { key: 'extreme',   label: '🔴 Extreme' },
+            { key: 'high',      label: '🟡 High' },
             { key: 'watchlist', label: `👁️ Watchlist (${watchlist.length})` },
           ].map(f => (
             <button
@@ -73,7 +154,6 @@ export default function LiveFeed({ trades, loading, countdown, watchlist, onAddW
             </button>
           ))}
 
-          {/* Sort */}
           <select
             value={sortKey}
             onChange={e => setSortKey(e.target.value)}
@@ -84,7 +164,6 @@ export default function LiveFeed({ trades, loading, countdown, watchlist, onAddW
             <option value="score">Sort: Insider Score</option>
           </select>
 
-          {/* Live countdown */}
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs font-mono text-blue-400">
             <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
             {countdown}s
@@ -92,7 +171,7 @@ export default function LiveFeed({ trades, loading, countdown, watchlist, onAddW
         </div>
       </div>
 
-      {/* Table */}
+      {/* ── Trades table ── */}
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -110,8 +189,8 @@ export default function LiveFeed({ trades, loading, countdown, watchlist, onAddW
                 <tr>
                   <td colSpan={8} className="text-center py-16 text-slate-500">
                     <div className="flex flex-col items-center gap-2">
-                      <div className="text-3xl">🔍</div>
-                      <div>No whale trades yet</div>
+                      <div className="text-3xl">{histLoading ? '⏳' : '🔍'}</div>
+                      <div>{histLoading ? 'Loading historical trades…' : `No whale trades in last ${PERIODS.find(p => p.key === period)?.label}`}</div>
                       <div className="text-xs">Watching for trades ≥ {formatAmount(threshold)}</div>
                     </div>
                   </td>
@@ -140,12 +219,12 @@ export default function LiveFeed({ trades, loading, countdown, watchlist, onAddW
 
 function TradeRow({ trade, isWatched, onAddWatch, onRemoveWatch, copiedAddr, onCopy, isNew }) {
   const market = trade._market
-  const score = trade._insiderScore || 0
-  const level = getInsiderLevel(score)
-  const isBuy = trade.side === 'BUY'
+  const score  = trade._insiderScore || 0
+  const level  = getInsiderLevel(score)
+  const isBuy  = trade.side === 'BUY'
   // API already returns title + slug inline — use as instant fallback before gamma lookup
   const question = truncateQuestion(market?.question || trade.title, 55)
-  const slug = market?.slug || trade.slug || trade.eventSlug || trade.market
+  const slug     = market?.slug || trade.slug || trade.eventSlug || trade.market
 
   return (
     <tr className={`border-b border-border/50 transition-colors hover:bg-bg-hover ${isNew ? 'animate-new-row' : ''}`}>
@@ -161,7 +240,7 @@ function TradeRow({ trade, isWatched, onAddWatch, onRemoveWatch, copiedAddr, onC
           target="_blank"
           rel="noopener noreferrer"
           className="text-slate-200 hover:text-white text-xs leading-snug block hover:underline"
-          title={market?.question}
+          title={market?.question || trade.title}
         >
           {question}
         </a>
@@ -257,7 +336,7 @@ function TradeRow({ trade, isWatched, onAddWatch, onRemoveWatch, copiedAddr, onC
 }
 
 function OddsBar({ price }) {
-  const pct = Math.round(parseFloat(price || 0.5) * 100)
+  const pct   = Math.round(parseFloat(price || 0.5) * 100)
   const color = pct > 70 ? 'bg-emerald-400' : pct < 30 ? 'bg-red-400' : 'bg-blue-400'
   return (
     <div className="flex flex-col items-end gap-1">

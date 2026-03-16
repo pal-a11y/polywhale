@@ -6,6 +6,7 @@ import CryptoMarkets from './components/CryptoMarkets'
 import Settings from './components/Settings'
 import {
   fetchRecentTrades,
+  fetchTradesSince,
   fetchMarketByConditionId,
   fetchWalletStats,
 } from './api'
@@ -42,9 +43,11 @@ export default function App() {
   }))
   const [stats, setStats] = useState({ todayVolume: 0, whaleCount: 0, activeMarkets: 0 })
   const [loading, setLoading] = useState(true)
+  const [histLoading, setHistLoading] = useState(false)
   const [error, setError] = useState(null)
   const [countdown, setCountdown] = useState(POLL_INTERVAL / 1000)
   const [toasts, setToasts] = useState([])
+  const fetchedPeriods = useRef(new Set())
 
   // Auto-discover whales from live feed
   const discoveredWhales = useMemo(() => {
@@ -108,6 +111,53 @@ export default function App() {
   const isWatched = useCallback((address) =>
     watchlist.some(w => w.address.toLowerCase() === address?.toLowerCase()),
     [watchlist])
+
+  // Fetch historical trades when user selects a longer period.
+  // Results are merged into `trades` so the same enrichment logic applies.
+  const fetchHistorical = useCallback(async (periodKey, sinceMs) => {
+    if (fetchedPeriods.current.has(periodKey)) return
+    fetchedPeriods.current.add(periodKey)
+    setHistLoading(true)
+    try {
+      const threshold = settings.threshold || DEFAULT_THRESHOLD
+      const maxPages = periodKey === '7d' ? 15 : periodKey === '24h' ? 8 : 4
+      const raw = await fetchTradesSince(sinceMs, maxPages)
+      const whales = raw.filter(t => parseFloat(t.size || 0) >= threshold)
+
+      // Batch enrich without re-fetching already known trades
+      const toEnrich = whales.filter(t => !seenIds.current.has(t.id))
+      const uniqueMarkets = [...new Set(toEnrich.map(t => t.market))]
+      const marketMap = new Map()
+      for (let i = 0; i < uniqueMarkets.length; i += MARKET_BATCH) {
+        const batch = uniqueMarkets.slice(i, i + MARKET_BATCH)
+        const results = await Promise.allSettled(batch.map(id => fetchMarketByConditionId(id)))
+        results.forEach((r, idx) => {
+          if (r.status === 'fulfilled' && r.value) marketMap.set(batch[idx], r.value)
+        })
+      }
+
+      const enriched = toEnrich.map(trade => {
+        seenIds.current.add(trade.id)
+        const market = marketMap.get(trade.market) || null
+        if (!settings.showSports && market && isSports(market)) return null
+        return { ...trade, _market: market, _insiderScore: calculateInsiderScore(trade, market, null), _isNew: false }
+      }).filter(Boolean)
+
+      if (enriched.length > 0) {
+        setTrades(prev => {
+          const merged = [...prev, ...enriched]
+            .sort((a, b) => new Date(b.match_time) - new Date(a.match_time))
+            .slice(0, 5000)
+          setHotMarkets(computeHotMarkets(merged))
+          return merged
+        })
+      }
+    } catch (err) {
+      console.error('Historical fetch error:', err)
+    } finally {
+      setHistLoading(false)
+    }
+  }, [settings])
 
   const fetchAndUpdate = useCallback(async () => {
     try {
@@ -281,12 +331,14 @@ export default function App() {
           <LiveFeed
             trades={trades}
             loading={loading}
+            histLoading={histLoading}
             countdown={countdown}
             watchlist={watchlist}
             onAddWatch={addToWatchlist}
             onRemoveWatch={removeFromWatchlist}
             isWatched={isWatched}
             threshold={settings.threshold}
+            onRequestHistory={fetchHistorical}
           />
         )}
         {activeTab === 'hot' && (
