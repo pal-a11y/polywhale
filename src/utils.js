@@ -113,17 +113,25 @@ export function calculateInsiderScore(trade, market, walletStats) {
     else if (['crypto'].includes(cat)) score += 8
   }
 
-  // --- Wallet History Factor (0–20 pts) ---
+  // --- Wallet History Factor (0–25 pts) ---
   if (walletStats) {
-    const { winRate, totalTrades, avgTradeSize } = walletStats
-    if (winRate > 0.75 && totalTrades > 20) score += 20
-    else if (winRate > 0.65 && totalTrades > 10) score += 14
-    else if (winRate > 0.55 && totalTrades > 5) score += 8
-    else if (winRate > 0.5) score += 4
+    const { weightedWinRate, winRate, totalTrades, avgTradeSize, edgeScore } = walletStats
+    // Prefer size-weighted win rate when available (more meaningful)
+    const wr = weightedWinRate ?? winRate
 
-    // Bonus: big average trade size = whale behavior pattern
+    if (wr > 0.80 && totalTrades > 20) score += 25
+    else if (wr > 0.70 && totalTrades > 10) score += 20
+    else if (wr > 0.60 && totalTrades > 5) score += 14
+    else if (wr > 0.55 && totalTrades > 5) score += 10
+    else if (wr > 0.50) score += 5
+
+    // Bonus: big average trade size = consistent whale behavior
     if (avgTradeSize > 50_000) score += 5
     else if (avgTradeSize > 20_000) score += 3
+
+    // High edge score signals consistent information advantage
+    if (edgeScore >= 80) score += 5
+    else if (edgeScore >= 65) score += 3
   }
 
   // --- Timing bonus: if this is a very recent trade in a market already active ---

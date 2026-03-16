@@ -48,6 +48,7 @@ export default function App() {
   const [countdown, setCountdown] = useState(POLL_INTERVAL / 1000)
   const [toasts, setToasts] = useState([])
   const fetchedPeriods = useRef(new Set())
+  const [walletStatsMap, setWalletStatsMap] = useState({})
 
   // Auto-discover whales from live feed
   const discoveredWhales = useMemo(() => {
@@ -68,10 +69,14 @@ export default function App() {
       }
     }
     return [...map.values()]
-      .map(w => ({ ...w, avgInsiderScore: Math.round(w.totalScore / w.tradeCount) }))
+      .map(w => ({
+        ...w,
+        avgInsiderScore: Math.round(w.totalScore / w.tradeCount),
+        walletStats: walletStatsMap[w.address.toLowerCase()] || null,
+      }))
       .sort((a, b) => b.totalVolume - a.totalVolume)
       .slice(0, 50)
-  }, [trades])
+  }, [trades, walletStatsMap])
 
   const seenIds = useRef(new Set())
   const pollTimer = useRef(null)
@@ -85,9 +90,15 @@ export default function App() {
   }, [])
 
   const saveSettings = useCallback((next) => {
+    // Reset history cache if threshold changed so new threshold applies to historical fetch
+    if (next.threshold !== settings.threshold) {
+      fetchedPeriods.current.clear()
+      setTrades([])
+      seenIds.current.clear()
+    }
     setSettings(next)
     saveLS('pw_settings', next)
-  }, [])
+  }, [settings.threshold])
 
   const addToWatchlist = useCallback((address, label = '') => {
     setWatchlist(prev => {
@@ -195,6 +206,9 @@ export default function App() {
 
         // Enrich trade
         const walletStats = await fetchWalletStats(trade.owner).catch(() => null)
+        if (walletStats) {
+          setWalletStatsMap(prev => ({ ...prev, [trade.owner.toLowerCase()]: walletStats }))
+        }
         const insiderScore = calculateInsiderScore(trade, market, walletStats)
         const enriched = { ...trade, _market: market, _insiderScore: insiderScore, _isNew: true }
 
@@ -218,7 +232,7 @@ export default function App() {
 
       if (newTrades.length > 0) {
         setTrades(prev => {
-          const merged = [...newTrades, ...prev].slice(0, 500)
+          const merged = [...newTrades, ...prev].slice(0, 5000)
           setHotMarkets(computeHotMarkets(merged))
           return merged
         })
@@ -353,6 +367,7 @@ export default function App() {
             watchlist={watchlist}
             trades={trades}
             discoveredWhales={discoveredWhales}
+            walletStatsMap={walletStatsMap}
             onAdd={addToWatchlist}
             onRemove={removeFromWatchlist}
             isWatched={isWatched}

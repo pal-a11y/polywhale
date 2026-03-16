@@ -3,6 +3,8 @@ const GAMMA_API = 'https://gamma-api.polymarket.com'
 
 const marketCache = new Map()
 const walletCache = new Map()
+const walletCacheTime = new Map()
+const WALLET_TTL = 30 * 60 * 1000 // 30 min
 
 /**
  * Normalize raw Polymarket API trade to internal format.
@@ -42,7 +44,7 @@ export async function fetchRecentTrades(limit = 200) {
   return arr.map(normalizeTrade)
 }
 
-export async function fetchWalletTrades(address, limit = 300) {
+export async function fetchWalletTrades(address, limit = 500) {
   const res = await fetch(`${DATA_API}/trades?user=${address}&limit=${limit}`)
   if (!res.ok) throw new Error(`Wallet API ${res.status}`)
   const data = await res.json()
@@ -72,9 +74,13 @@ export async function fetchMarketByConditionId(conditionId) {
 }
 
 export async function fetchWalletStats(address) {
-  if (walletCache.has(address)) return walletCache.get(address)
+  const now = Date.now()
+  const cached = walletCache.get(address)
+  const cachedAt = walletCacheTime.get(address)
+  if (cached && cachedAt && (now - cachedAt) < WALLET_TTL) return cached
+
   try {
-    const trades = await fetchWalletTrades(address, 300)
+    const trades = await fetchWalletTrades(address, 500)
     if (!trades?.length) return null
 
     // size is already in USDC after normalization
@@ -82,35 +88,81 @@ export async function fetchWalletStats(address) {
     const markets = new Map()
 
     for (const t of trades) {
-      if (!markets.has(t.market)) {
-        markets.set(t.market, { trades: [] })
-      }
+      if (!markets.has(t.market)) markets.set(t.market, { trades: [] })
       markets.get(t.market).trades.push(t)
     }
 
-    // Heuristic win rate: % of markets where last trade price improved
+    // Per-market performance: did price move in their favor?
+    let weightedWins = 0
+    let weightedTotal = 0
+    let totalEdge = 0
     let wins = 0
     let resolved = 0
+
     for (const [, m] of markets) {
       const sorted = [...m.trades].sort((a, b) => new Date(a.match_time) - new Date(b.match_time))
-      const first = parseFloat(sorted[0]?.price || 0.5)
-      const last = parseFloat(sorted[sorted.length - 1]?.price || 0.5)
-      const side = sorted[0]?.side
-      if (side === 'BUY' && last > first) wins++
-      else if (side === 'SELL' && last < first) wins++
+      const first = sorted[0]
+      const last = sorted[sorted.length - 1]
+      const entryPrice = parseFloat(first?.price || 0.5)
+      const latestPrice = parseFloat(last?.price || 0.5)
+      const side = first?.side
+      const posSize = m.trades.reduce((s, t) => s + parseFloat(t.size || 0), 0)
+
+      const priceImproved =
+        (side === 'BUY' && latestPrice > entryPrice) ||
+        (side === 'SELL' && latestPrice < entryPrice)
+
+      weightedTotal += posSize
+      if (priceImproved) {
+        weightedWins += posSize
+        wins++
+      }
       resolved++
+
+      // Edge = relative price movement in their favor
+      if (entryPrice > 0.01 && entryPrice < 0.99) {
+        const edge = side === 'BUY'
+          ? (latestPrice - entryPrice) / entryPrice
+          : (entryPrice - latestPrice) / entryPrice
+        totalEdge += edge * posSize
+      }
     }
+
+    const winRate = resolved > 0 ? wins / resolved : 0.5
+    const weightedWinRate = weightedTotal > 0 ? weightedWins / weightedTotal : 0.5
+    const avgEdge = weightedTotal > 0 ? totalEdge / weightedTotal : 0
+
+    // Composite edge score 0–100
+    // Requires ≥3 markets to get a meaningful score
+    let edgeScore = 0
+    if (resolved >= 3) {
+      if (weightedWinRate >= 0.80) edgeScore = 85 + Math.min(15, (resolved - 3) * 1.5)
+      else if (weightedWinRate >= 0.70) edgeScore = 65 + (weightedWinRate - 0.70) * 200
+      else if (weightedWinRate >= 0.60) edgeScore = 45 + (weightedWinRate - 0.60) * 200
+      else if (weightedWinRate >= 0.50) edgeScore = 25 + (weightedWinRate - 0.50) * 200
+      else edgeScore = Math.max(0, weightedWinRate * 50)
+
+      // Edge multiplier bonus
+      if (avgEdge > 0.5) edgeScore = Math.min(100, edgeScore + 15)
+      else if (avgEdge > 0.25) edgeScore = Math.min(100, edgeScore + 8)
+      else if (avgEdge < -0.1) edgeScore = Math.max(0, edgeScore - 10)
+    }
+    edgeScore = Math.min(100, Math.round(edgeScore))
 
     const stats = {
       totalTrades: trades.length,
       totalVolume,
       uniqueMarkets: markets.size,
       avgTradeSize: totalVolume / trades.length,
-      winRate: resolved > 0 ? wins / resolved : 0.5,
+      winRate,
+      weightedWinRate,
+      avgEdge,
+      edgeScore,
       largestTrade: Math.max(...trades.map(t => parseFloat(t.size || 0))),
     }
 
     walletCache.set(address, stats)
+    walletCacheTime.set(address, now)
     return stats
   } catch {
     return null
@@ -118,37 +170,56 @@ export async function fetchWalletStats(address) {
 }
 
 /**
- * Paginate backwards through the trades API until we have all trades
- * newer than `sinceTimestamp` (ms) or we hit `maxPages`.
- * Each page = 500 trades, newest-first.
+ * Paginate backwards through the trades API using cursor-based pagination
+ * (before= timestamp) until we have all trades newer than sinceTimestamp.
  */
-export async function fetchTradesSince(sinceTimestamp, maxPages = 10) {
+export async function fetchTradesSince(sinceTimestamp, maxPages = 20) {
   const PAGE = 500
   const all = []
+  const seenIds = new Set()
+  const sinceTs = Math.floor(sinceTimestamp / 1000) // convert ms → seconds
+
+  let beforeTs = null // Unix seconds cursor
 
   for (let page = 0; page < maxPages; page++) {
-    const offset = page * PAGE
+    const params = new URLSearchParams({ limit: PAGE })
+    if (beforeTs !== null) params.set('before', beforeTs)
+
     let res
     try {
-      res = await fetch(`${DATA_API}/trades?limit=${PAGE}&offset=${offset}`)
+      res = await fetch(`${DATA_API}/trades?${params}`)
       if (!res.ok) break
     } catch {
       break
     }
+
     const data = await res.json()
     const arr = Array.isArray(data) ? data : (data.data || data.trades || [])
     if (!arr.length) break
 
     const normalized = arr.map(normalizeTrade)
+    let addedThisPage = 0
 
     for (const t of normalized) {
-      if (new Date(t.match_time).getTime() >= sinceTimestamp) all.push(t)
+      const ts = t.timestamp || Math.floor(new Date(t.match_time).getTime() / 1000)
+      if (ts >= sinceTs && !seenIds.has(t.id)) {
+        seenIds.add(t.id)
+        all.push(t)
+        addedThisPage++
+      }
     }
 
-    // Stop once the oldest trade in this page is before our window
     const oldest = normalized[normalized.length - 1]
-    if (new Date(oldest.match_time).getTime() < sinceTimestamp) break
-    if (arr.length < PAGE) break
+    const oldestTs = oldest.timestamp || Math.floor(new Date(oldest.match_time).getTime() / 1000)
+
+    // Stop if we've gone past our window or no more pages
+    if (oldestTs < sinceTs || arr.length < PAGE) break
+
+    // Advance cursor — subtract 1s to avoid re-fetching same-second trades
+    beforeTs = oldestTs - 1
+
+    // Safety: if nothing new was added and cursor didn't move, stop
+    if (addedThisPage === 0) break
   }
 
   return all

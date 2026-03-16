@@ -25,13 +25,13 @@ export default function LiveFeed({
   const [sortKey, setSortKey] = useState('time')  // time | size | score
   const [copiedAddr, setCopiedAddr] = useState(null)
 
-  // When period changes, request historical data from parent if needed
+  // When period changes, request historical data for anything >= 1h
+  // (5m and 15m are fully covered by the live polling buffer)
   useEffect(() => {
     const p = PERIODS.find(x => x.key === period)
     if (!p) return
     const sinceMs = Date.now() - p.ms
-    // Only fetch for periods > 1h (shorter ones are always covered by live polling)
-    if (p.ms > 60 * 60 * 1000) {
+    if (p.ms >= 60 * 60 * 1000) {
       onRequestHistory?.(period, sinceMs)
     }
   }, [period]) // eslint-disable-line react-hooks/exhaustive-deps

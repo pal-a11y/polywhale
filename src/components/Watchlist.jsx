@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react'
 import { formatAmount, formatAddress, formatTimeAgo, truncateQuestion, getInsiderLevel } from '../utils'
 
-export default function Watchlist({ watchlist, trades, discoveredWhales, onAdd, onRemove, isWatched, addToast }) {
+export default function Watchlist({ watchlist, trades, discoveredWhales, walletStatsMap = {}, onAdd, onRemove, isWatched, addToast }) {
   const [newAddr, setNewAddr] = useState('')
   const [newLabel, setNewLabel] = useState('')
-  const [sortBy, setSortBy] = useState('volume') // volume | score | trades
+  const [sortBy, setSortBy] = useState('volume') // volume | score | trades | edge
   const [activeSection, setActiveSection] = useState('discovered') // discovered | watched
 
   const handleAdd = (addr, label = '') => {
@@ -26,6 +26,7 @@ export default function Watchlist({ watchlist, trades, discoveredWhales, onAdd, 
     const list = [...discoveredWhales]
     if (sortBy === 'score') return list.sort((a, b) => b.avgInsiderScore - a.avgInsiderScore)
     if (sortBy === 'trades') return list.sort((a, b) => b.tradeCount - a.tradeCount)
+    if (sortBy === 'edge') return list.sort((a, b) => (b.walletStats?.edgeScore ?? 0) - (a.walletStats?.edgeScore ?? 0))
     return list // already sorted by volume
   }, [discoveredWhales, sortBy])
 
@@ -85,11 +86,12 @@ export default function Watchlist({ watchlist, trades, discoveredWhales, onAdd, 
           ) : (
             <>
               {/* Sort controls */}
-              <div className="flex items-center gap-2 mb-4">
+              <div className="flex items-center gap-2 mb-4 flex-wrap">
                 <span className="text-xs text-slate-500">Sort by:</span>
                 {[
                   { key: 'volume', label: '💰 Volume' },
-                  { key: 'score', label: '🔴 Insider Score' },
+                  { key: 'edge',   label: '🧠 Edge Score' },
+                  { key: 'score',  label: '🔴 Insider Score' },
                   { key: 'trades', label: '📊 Trade Count' },
                 ].map(s => (
                   <button
@@ -116,6 +118,9 @@ export default function Watchlist({ watchlist, trades, discoveredWhales, onAdd, 
                         <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Wallet</th>
                         <th className="text-right px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Total Volume</th>
                         <th className="text-center px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Trades</th>
+                        <th className="text-center px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                          <span title="Size-weighted win rate based on price appreciation across all traded markets">🧠 Edge</span>
+                        </th>
                         <th className="text-center px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Avg Score</th>
                         <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Last Trade</th>
                         <th className="text-center px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500">Watch</th>
@@ -180,6 +185,7 @@ export default function Watchlist({ watchlist, trades, discoveredWhales, onAdd, 
                   key={wallet.address}
                   wallet={wallet}
                   trades={walletTrades.get(wallet.address.toLowerCase()) || []}
+                  walletStats={walletStatsMap[wallet.address.toLowerCase()] || null}
                   onRemove={onRemove}
                   addToast={addToast}
                 />
@@ -195,12 +201,28 @@ export default function Watchlist({ watchlist, trades, discoveredWhales, onAdd, 
 function WhaleRow({ whale, rank, watched, onAdd, onRemove, addToast }) {
   const level = getInsiderLevel(whale.avgInsiderScore)
   const lastMarket = whale.lastTrade?._market
+  const stats = whale.walletStats
+  const edgeScore = stats?.edgeScore ?? null
+  const weightedWr = stats?.weightedWinRate ?? null
+
   const copyAddr = () => {
     navigator.clipboard.writeText(whale.address)
     addToast('Copied!', 'success')
   }
 
   const medals = ['🥇', '🥈', '🥉']
+
+  // Edge badge styling
+  const edgeColor = edgeScore === null ? '#64748b'
+    : edgeScore >= 80 ? '#a855f7'
+    : edgeScore >= 65 ? '#ef4444'
+    : edgeScore >= 50 ? '#f59e0b'
+    : '#64748b'
+  const edgeBg = edgeScore === null ? 'rgba(100,116,139,0.10)'
+    : edgeScore >= 80 ? 'rgba(168,85,247,0.12)'
+    : edgeScore >= 65 ? 'rgba(239,68,68,0.12)'
+    : edgeScore >= 50 ? 'rgba(245,158,11,0.12)'
+    : 'rgba(100,116,139,0.10)'
 
   return (
     <tr className="border-b border-border/50 hover:bg-bg-hover transition-colors">
@@ -250,6 +272,26 @@ function WhaleRow({ whale, rank, watched, onAdd, onRemove, addToast }) {
         <span className="mono text-blue-400 font-semibold">{whale.tradeCount}</span>
       </td>
 
+      {/* Edge score */}
+      <td className="px-4 py-3 text-center">
+        {edgeScore !== null ? (
+          <div className="flex flex-col items-center gap-0.5">
+            <div
+              className="inline-block px-2 py-0.5 rounded text-xs mono font-bold"
+              style={{ color: edgeColor, background: edgeBg }}
+              title={`Weighted win rate: ${weightedWr !== null ? Math.round(weightedWr * 100) + '%' : 'N/A'} · Avg edge: ${stats?.avgEdge !== undefined ? (stats.avgEdge * 100).toFixed(0) + '%' : 'N/A'}`}
+            >
+              {edgeScore}
+            </div>
+            {weightedWr !== null && (
+              <div className="text-xs text-slate-600">{Math.round(weightedWr * 100)}% WR</div>
+            )}
+          </div>
+        ) : (
+          <span className="text-slate-700 text-xs">—</span>
+        )}
+      </td>
+
       {/* Avg insider score */}
       <td className="px-4 py-3 text-center">
         <div
@@ -285,9 +327,22 @@ function WhaleRow({ whale, rank, watched, onAdd, onRemove, addToast }) {
   )
 }
 
-function WatchedWalletCard({ wallet, trades, onRemove, addToast }) {
+function WatchedWalletCard({ wallet, trades, walletStats, onRemove, addToast }) {
   const totalVolume = trades.reduce((s, t) => s + parseFloat(t.size || 0), 0)
   const buyCount = trades.filter(t => t.side === 'BUY').length
+  const edgeScore = walletStats?.edgeScore ?? null
+  const weightedWr = walletStats?.weightedWinRate ?? null
+
+  const edgeColor = edgeScore === null ? '#64748b'
+    : edgeScore >= 80 ? '#a855f7'
+    : edgeScore >= 65 ? '#ef4444'
+    : edgeScore >= 50 ? '#f59e0b'
+    : '#64748b'
+  const edgeBg = edgeScore === null ? 'rgba(100,116,139,0.10)'
+    : edgeScore >= 80 ? 'rgba(168,85,247,0.12)'
+    : edgeScore >= 65 ? 'rgba(239,68,68,0.12)'
+    : edgeScore >= 50 ? 'rgba(245,158,11,0.12)'
+    : 'rgba(100,116,139,0.10)'
 
   const copyAddr = () => {
     navigator.clipboard.writeText(wallet.address)
@@ -298,12 +353,21 @@ function WatchedWalletCard({ wallet, trades, onRemove, addToast }) {
     <div className="card p-4">
       <div className="flex items-start justify-between mb-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-white">
               {wallet.label !== wallet.address.slice(0, 8) ? wallet.label : formatAddress(wallet.address)}
             </span>
             {trades.length > 0 && (
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse-slow" />
+            )}
+            {edgeScore !== null && (
+              <span
+                className="px-2 py-0.5 rounded text-xs mono font-bold"
+                style={{ color: edgeColor, background: edgeBg }}
+                title={`Edge Score: ${edgeScore}/100 · Win rate: ${weightedWr !== null ? Math.round(weightedWr * 100) + '%' : 'N/A'}`}
+              >
+                🧠 EDGE {edgeScore}
+              </span>
             )}
           </div>
           <div className="flex items-center gap-2 mt-1">
@@ -311,6 +375,13 @@ function WatchedWalletCard({ wallet, trades, onRemove, addToast }) {
               {wallet.address}
             </span>
           </div>
+          {walletStats && (
+            <div className="flex items-center gap-3 mt-1">
+              <span className="text-xs text-slate-500">
+                {walletStats.uniqueMarkets} markets · {Math.round((weightedWr ?? 0) * 100)}% size-wtd WR
+              </span>
+            </div>
+          )}
         </div>
         <div className="flex gap-2">
           <a
