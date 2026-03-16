@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import LiveFeed from './components/LiveFeed'
 import HotMarkets from './components/HotMarkets'
 import Watchlist from './components/Watchlist'
@@ -45,6 +45,30 @@ export default function App() {
   const [error, setError] = useState(null)
   const [countdown, setCountdown] = useState(POLL_INTERVAL / 1000)
   const [toasts, setToasts] = useState([])
+
+  // Auto-discover whales from live feed
+  const discoveredWhales = useMemo(() => {
+    const map = new Map()
+    for (const t of trades) {
+      const addr = t.owner
+      if (!addr) continue
+      if (!map.has(addr)) {
+        map.set(addr, { address: addr, totalVolume: 0, tradeCount: 0, totalScore: 0, trades: [], lastTrade: null })
+      }
+      const w = map.get(addr)
+      w.totalVolume += parseFloat(t.size || 0)
+      w.tradeCount++
+      w.totalScore += t._insiderScore || 0
+      w.trades.push(t)
+      if (!w.lastTrade || new Date(t.match_time) > new Date(w.lastTrade.match_time)) {
+        w.lastTrade = t
+      }
+    }
+    return [...map.values()]
+      .map(w => ({ ...w, avgInsiderScore: Math.round(w.totalScore / w.tradeCount) }))
+      .sort((a, b) => b.totalVolume - a.totalVolume)
+      .slice(0, 50)
+  }, [trades])
 
   const seenIds = useRef(new Set())
   const pollTimer = useRef(null)
@@ -276,8 +300,10 @@ export default function App() {
           <Watchlist
             watchlist={watchlist}
             trades={trades}
+            discoveredWhales={discoveredWhales}
             onAdd={addToWatchlist}
             onRemove={removeFromWatchlist}
+            isWatched={isWatched}
             addToast={addToast}
           />
         )}
