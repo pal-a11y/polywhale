@@ -170,20 +170,19 @@ export async function fetchWalletStats(address) {
 }
 
 /**
- * Paginate backwards through the trades API using cursor-based pagination
- * (before= timestamp) until we have all trades newer than sinceTimestamp.
+ * Paginate through the trades API using offset-based pagination
+ * until we have all trades newer than sinceTimestamp.
+ *
+ * The Polymarket data-api uses ?offset=N (not cursor/before).
  */
 export async function fetchTradesSince(sinceTimestamp, maxPages = 20) {
   const PAGE = 500
   const all = []
   const seenIds = new Set()
-  const sinceTs = Math.floor(sinceTimestamp / 1000) // convert ms → seconds
-
-  let beforeTs = null // Unix seconds cursor
+  const sinceTs = Math.floor(sinceTimestamp / 1000) // ms → unix seconds
 
   for (let page = 0; page < maxPages; page++) {
-    const params = new URLSearchParams({ limit: PAGE })
-    if (beforeTs !== null) params.set('before', beforeTs)
+    const params = new URLSearchParams({ limit: PAGE, offset: page * PAGE })
 
     let res
     try {
@@ -198,28 +197,22 @@ export async function fetchTradesSince(sinceTimestamp, maxPages = 20) {
     if (!arr.length) break
 
     const normalized = arr.map(normalizeTrade)
-    let addedThisPage = 0
+    let reachedWindow = false
 
     for (const t of normalized) {
       const ts = t.timestamp || Math.floor(new Date(t.match_time).getTime() / 1000)
-      if (ts >= sinceTs && !seenIds.has(t.id)) {
+      if (ts < sinceTs) {
+        reachedWindow = true
+        break // This page has gone past our window; stop pagination
+      }
+      if (!seenIds.has(t.id)) {
         seenIds.add(t.id)
         all.push(t)
-        addedThisPage++
       }
     }
 
-    const oldest = normalized[normalized.length - 1]
-    const oldestTs = oldest.timestamp || Math.floor(new Date(oldest.match_time).getTime() / 1000)
-
-    // Stop if we've gone past our window or no more pages
-    if (oldestTs < sinceTs || arr.length < PAGE) break
-
-    // Advance cursor — subtract 1s to avoid re-fetching same-second trades
-    beforeTs = oldestTs - 1
-
-    // Safety: if nothing new was added and cursor didn't move, stop
-    if (addedThisPage === 0) break
+    // Stop if we found the boundary or this was the last page
+    if (reachedWindow || arr.length < PAGE) break
   }
 
   return all

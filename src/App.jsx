@@ -127,16 +127,23 @@ export default function App() {
   // Results are merged into `trades` so the same enrichment logic applies.
   const fetchHistorical = useCallback(async (periodKey, sinceMs) => {
     if (fetchedPeriods.current.has(periodKey)) return
-    fetchedPeriods.current.add(periodKey)
     setHistLoading(true)
     try {
       const threshold = settings.threshold || DEFAULT_THRESHOLD
-      const maxPages = periodKey === '7d' ? 15 : periodKey === '24h' ? 8 : 4
+      // More pages for longer windows: 7d needs ~20+ pages of 500
+      const maxPages = periodKey === '7d' ? 30 : periodKey === '24h' ? 12 : periodKey === '6h' ? 6 : 4
       const raw = await fetchTradesSince(sinceMs, maxPages)
       const whales = raw.filter(t => parseFloat(t.size || 0) >= threshold)
 
       // Batch enrich without re-fetching already known trades
       const toEnrich = whales.filter(t => !seenIds.current.has(t.id))
+
+      if (toEnrich.length === 0) {
+        // Nothing new — still mark done so we don't spam the API
+        fetchedPeriods.current.add(periodKey)
+        return
+      }
+
       const uniqueMarkets = [...new Set(toEnrich.map(t => t.market))]
       const marketMap = new Map()
       for (let i = 0; i < uniqueMarkets.length; i += MARKET_BATCH) {
@@ -162,9 +169,16 @@ export default function App() {
           setHotMarkets(computeHotMarkets(merged))
           return merged
         })
+        // Only cache the period as done after a successful non-empty fetch
+        fetchedPeriods.current.add(periodKey)
+      }
+      // If enriched.length === 0 (all filtered as sports), still mark done
+      else {
+        fetchedPeriods.current.add(periodKey)
       }
     } catch (err) {
       console.error('Historical fetch error:', err)
+      // Do NOT add to fetchedPeriods on error — allow retry on next click
     } finally {
       setHistLoading(false)
     }
