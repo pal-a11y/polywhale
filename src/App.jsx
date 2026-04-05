@@ -4,6 +4,7 @@ import HotMarkets from './components/HotMarkets'
 import Watchlist from './components/Watchlist'
 import CryptoMarkets from './components/CryptoMarkets'
 import Settings from './components/Settings'
+import ScreenerTab from './ScreenerTab'
 import {
   fetchRecentTrades,
   fetchTradesSince,
@@ -288,6 +289,7 @@ export default function App() {
     { id: 'hot', label: 'Hot Markets', icon: '🔥' },
     { id: 'watchlist', label: 'Watchlist', icon: '👁️', badge: watchlist.length || null },
     { id: 'crypto', label: 'Crypto Markets', icon: '💰' },
+    { id: 'screener', label: 'Screener', icon: '🔬' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
   ]
 
@@ -394,6 +396,12 @@ export default function App() {
             loading={loading}
             isWatched={isWatched}
             onAddWatch={addToWatchlist}
+          />
+        )}
+        {activeTab === 'screener' && (
+          <ScreenerTab
+            onAddWatch={addToWatchlist}
+            isWatched={isWatched}
           />
         )}
         {activeTab === 'settings' && (
