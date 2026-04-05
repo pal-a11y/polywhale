@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import {
   runScreenerScan,
+  fetchRecentActiveWallets,
   abortScan,
   getCachedResults,
   isCacheValid,
@@ -29,24 +30,32 @@ export default function ScreenerTab({ discoveredWhales, onAddWatch, isWatched })
   const [sortKey, setSortKey] = useState('composite')
 
   const startScan = async () => {
-    if (!discoveredWhales?.length) {
-      setErrorMsg('No whale wallets discovered yet — wait for the Live Feed to collect some trades first.')
-      setScanState('error')
-      return
-    }
     setScanState('scanning')
     setErrorMsg(null)
-    setProgress({ current: 0, total: 0, wallet: '' })
-
-    // Map discoveredWhales to the flat account shape screener.js expects
-    const accounts = discoveredWhales.map(w => ({
-      address: w.address,
-      name: w.lastTrade?.pseudonym || null,
-      liveVolume: w.totalVolume,
-      liveTrades: w.tradeCount,
-    }))
+    setProgress({ current: 0, total: 0, wallet: 'Fetching wallet pool…' })
 
     try {
+      // 1. Fetch top 50 wallets from recent 500 trades
+      const fetched = await fetchRecentActiveWallets()
+
+      // 2. Merge with discoveredWhales (dedup by address, keep highest volume)
+      const volumeMap = new Map()
+      for (const w of fetched) {
+        volumeMap.set(w.address, { address: w.address, totalVolume: w.totalVolume, tradeCount: w.tradeCount })
+      }
+      for (const w of (discoveredWhales || [])) {
+        const addr = w.address.toLowerCase()
+        const existing = volumeMap.get(addr)
+        if (!existing || w.totalVolume > existing.totalVolume) {
+          volumeMap.set(addr, { address: addr, totalVolume: w.totalVolume, tradeCount: w.tradeCount })
+        }
+      }
+
+      // 3. Top 50 by volume from the merged pool
+      const accounts = [...volumeMap.values()]
+        .sort((a, b) => b.totalVolume - a.totalVolume)
+        .slice(0, 50)
+
       const res = await runScreenerScan(accounts, ({ current, total, wallet }) => {
         setProgress({ current, total, wallet })
       })
@@ -98,23 +107,15 @@ export default function ScreenerTab({ discoveredWhales, onAddWatch, isWatched })
             Scores the top whale wallets detected in the Live Feed on ROI, Consistency, and Sharpness.
             Scan takes 2–4 minutes — progress is shown live.
           </p>
-          {whaleCount > 0 ? (
+          {whaleCount > 0 && (
             <p className="text-emerald-400 text-sm mt-2 font-medium">
-              {whaleCount} whale wallets ready to scan
-            </p>
-          ) : (
-            <p className="text-yellow-400 text-sm mt-2">
-              Waiting for Live Feed to collect whale wallets first…
+              +{whaleCount} additional wallets from Live Feed
             </p>
           )}
         </div>
         <ScoreWeightsLegend />
-        <button
-          onClick={startScan}
-          disabled={whaleCount === 0}
-          className="btn-primary px-8 py-3 text-base disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Start Scan ({whaleCount} wallets)
+        <button onClick={startScan} className="btn-primary px-8 py-3 text-base">
+          Start Scan
         </button>
       </div>
     )

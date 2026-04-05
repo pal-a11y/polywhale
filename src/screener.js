@@ -26,6 +26,31 @@ function delay(ms) {
 }
 
 // ---------------------------------------------------------------------------
+// Wallet pool — top 50 active wallets by volume from recent trades
+// ---------------------------------------------------------------------------
+export async function fetchRecentActiveWallets() {
+  const res = await fetch(`${DATA_API}/trades?limit=500`)
+  if (!res.ok) throw new Error(`Trades API ${res.status}`)
+  const data = await res.json()
+  const arr = Array.isArray(data) ? data : (data.data || data.trades || [])
+
+  const map = new Map()
+  for (const t of arr) {
+    const addr = (t.proxyWallet || '').toLowerCase()
+    if (!addr || !addr.startsWith('0x')) continue
+    const usdcValue = parseFloat(t.size || 0) * parseFloat(t.price || 0)
+    if (!map.has(addr)) map.set(addr, { address: addr, totalVolume: 0, tradeCount: 0 })
+    const w = map.get(addr)
+    w.totalVolume += usdcValue
+    w.tradeCount++
+  }
+
+  return [...map.values()]
+    .sort((a, b) => b.totalVolume - a.totalVolume)
+    .slice(0, 50)
+}
+
+// ---------------------------------------------------------------------------
 // Trade history per wallet (paginated, same style as fetchTradesSince in api.js)
 // ---------------------------------------------------------------------------
 async function fetchWalletHistory(address, maxPages = 10) {
