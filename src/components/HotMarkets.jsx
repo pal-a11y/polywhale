@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 import { formatAmount, formatOddsPct, truncateQuestion, getInsiderLevel } from '../utils'
 
-const POLYMARKET_BASE = 'https://polymarket.com/event/'
 
 export default function HotMarkets({ hotMarkets, loading }) {
   const sorted = useMemo(() =>
@@ -46,7 +45,12 @@ export default function HotMarkets({ hotMarkets, loading }) {
 function MarketCard({ data, rank }) {
   const market = data.market
   const question = truncateQuestion(market?.question, 70)
-  const slug = market?.slug || data.conditionId
+  // slug is the human-readable URL segment; conditionId is the hex fallback.
+  // /event/<slug> works; /market/<conditionId> also resolves on Polymarket.
+  const slug = market?.slug
+  const url = slug
+    ? `https://polymarket.com/event/${slug}`
+    : `https://polymarket.com/market/${data.conditionId}`
   const level = getInsiderLevel(data.avgInsiderScore)
 
   const buyPct = data.trades.length > 0
@@ -60,7 +64,7 @@ function MarketCard({ data, rank }) {
 
   return (
     <a
-      href={`${POLYMARKET_BASE}${slug}`}
+      href={url}
       target="_blank"
       rel="noopener noreferrer"
       className="card p-4 hover:border-border-light transition-all hover:bg-bg-hover block group"
