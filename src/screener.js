@@ -1,15 +1,16 @@
 /**
- * screener.js — Polymarket Screener: leaderboard fetch + per-wallet scoring
+ * screener.js — Polymarket Screener: per-wallet scoring
+ *
+ * Account list comes from App.jsx's discoveredWhales (top 50 by volume from
+ * live trades) — no leaderboard endpoint needed, avoids CORS issues entirely.
  *
  * Follows the same patterns as api.js:
- *  - Module-level Map caches with manual TTL
- *  - normalizeTrade() already handles field mapping (imported via api.js re-export)
+ *  - Module-level cache with manual TTL
  *  - 250ms rate-limited queue between wallet fetches
  *  - Per-wallet try/catch — one failure never stops the scan
  */
 
 const DATA_API = 'https://data-api.polymarket.com'
-const GAMMA_API = 'https://gamma-api.polymarket.com'
 
 const SCREENER_TTL = 30 * 60 * 1000 // 30 min — same as wallet stats cache in api.js
 
@@ -22,61 +23,6 @@ let scanAbortFlag = false      // set to true to cancel an in-progress scan
 // ---------------------------------------------------------------------------
 function delay(ms) {
   return new Promise(res => setTimeout(res, ms))
-}
-
-async function rateLimitedFetch(url) {
-  await delay(250)
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status} — ${url}`)
-  return res.json()
-}
-
-// ---------------------------------------------------------------------------
-// Leaderboard: try 3 endpoint shapes, log which one works
-// ---------------------------------------------------------------------------
-const LEADERBOARD_URLS = [
-  `${GAMMA_API}/profiles?limit=50&sortBy=profitAndLoss&window=alltime`,
-  `${GAMMA_API}/leaderboard?limit=50&window=alltime`,
-  `${DATA_API}/profiles?limit=50&sortBy=profitAndLoss`,
-]
-
-export async function fetchLeaderboard() {
-  for (const url of LEADERBOARD_URLS) {
-    try {
-      const res = await fetch(url)
-      if (!res.ok) {
-        console.warn(`[screener] leaderboard: ${res.status} — ${url}`)
-        continue
-      }
-      const data = await res.json()
-      const arr = Array.isArray(data) ? data : (data.data || data.profiles || data.results || [])
-      if (arr.length > 0) {
-        console.info(`[screener] leaderboard OK via: ${url}`, arr[0])
-        return arr
-      }
-      console.warn(`[screener] leaderboard: empty array — ${url}`)
-    } catch (err) {
-      console.warn(`[screener] leaderboard error — ${url}`, err.message)
-    }
-  }
-  throw new Error('All leaderboard endpoints failed or returned empty data')
-}
-
-// Page-2 of leaderboard (get accounts 51–100) — uses same URL that worked for page 1
-export async function fetchLeaderboardPage2(workingBase) {
-  try {
-    const url = workingBase.includes('offset=')
-      ? workingBase.replace(/offset=\d+/, 'offset=50')
-      : workingBase + (workingBase.includes('?') ? '&offset=50' : '?offset=50')
-    await delay(250)
-    const res = await fetch(url)
-    if (!res.ok) return []
-    const data = await res.json()
-    const arr = Array.isArray(data) ? data : (data.data || data.profiles || data.results || [])
-    return arr
-  } catch {
-    return []
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -292,49 +238,22 @@ function scoreSharpness(trades) {
 // ---------------------------------------------------------------------------
 
 /**
- * @param {Function} onProgress  called with ({ current, total, wallet, result }) each step
- * @returns {Promise<Array>}     array of scored wallet objects
+ * @param {Array}    accounts     wallet list from discoveredWhales — { address, totalVolume, ... }
+ * @param {Function} onProgress   called with ({ current, total, wallet }) each step
+ * @returns {Promise<Array>}      array of scored wallet objects
  */
-export async function runScreenerScan(onProgress) {
+export async function runScreenerScan(accounts, onProgress) {
   scanAbortFlag = false
-
-  // 1. Fetch leaderboard (up to 100 accounts)
-  const page1 = await fetchLeaderboard()
-  const workingUrl = LEADERBOARD_URLS.find(async u => {
-    try { const r = await fetch(u); return r.ok } catch { return false }
-  }) || LEADERBOARD_URLS[0]
-
-  await delay(300)
-  const page2 = await fetchLeaderboardPage2(
-    LEADERBOARD_URLS[0].replace('limit=50', 'limit=50') // offset added inside fn
-  ).catch(() => [])
-
-  const raw = [...page1, ...page2].slice(0, 100)
-
-  // Extract wallet address — field name varies across endpoints
-  const accounts = raw.map(entry => ({
-    address: (
-      entry.proxyWalletAddress ||
-      entry.address ||
-      entry.proxyWallet ||
-      entry.walletAddress ||
-      entry.user ||
-      ''
-    ).toLowerCase(),
-    name: entry.name || entry.pseudonym || entry.username || null,
-    leaderboardVolume: parseFloat(entry.volume || entry.totalVolume || 0),
-    leaderboardPnl: parseFloat(entry.profitAndLoss || entry.pnl || entry.profit || 0),
-  })).filter(a => a.address && a.address.startsWith('0x'))
 
   const total = accounts.length
   const results = []
 
-  // 2. Score each account
+  // Score each account
   for (let i = 0; i < accounts.length; i++) {
     if (scanAbortFlag) break
 
     const account = accounts[i]
-    onProgress?.({ current: i + 1, total, wallet: account.address, result: null })
+    onProgress?.({ current: i + 1, total, wallet: account.address })
 
     try {
       const trades = await fetchWalletHistory(account.address)
@@ -366,7 +285,7 @@ export async function runScreenerScan(onProgress) {
       }
 
       results.push(result)
-      onProgress?.({ current: i + 1, total, wallet: account.address, result })
+      onProgress?.({ current: i + 1, total, wallet: account.address })
 
     } catch (err) {
       console.warn(`[screener] wallet ${account.address} failed:`, err.message)

@@ -400,6 +400,7 @@ export default function App() {
         )}
         {activeTab === 'screener' && (
           <ScreenerTab
+            discoveredWhales={discoveredWhales}
             onAddWatch={addToWatchlist}
             isWatched={isWatched}
           />
